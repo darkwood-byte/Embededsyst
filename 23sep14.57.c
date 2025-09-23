@@ -8,7 +8,7 @@
 
 #include "ws2812.pio.h"//leds
 
-#define INPUT_MS 5
+#define INPUT_MS 15
 #define SECURE_MS 1
 
 #define BUTTON_MS 150

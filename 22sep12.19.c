@@ -40,7 +40,7 @@ volatile int delta = 0;
 volatile int mode = 6;
 
 volatile int green = 0;
-volatile int red = 100;
+volatile int red = 20;
 volatile int blue = 0;
 
 int max_delta = 40;
@@ -215,7 +215,7 @@ void led_rainbow(void){
             case 4: r = step;      g = 0;          b = 255; break; // blauw -> magenta
             case 5: r = 255;       g = 0;          b = 255-step; break; // magenta -> rood
         }
-        if (mode != 5){return;}
+        if (mode != 5){delta = blue; return;}
         all_leds(r, g, b);
         sleep_ms(5 + delta); 
     }
@@ -278,7 +278,7 @@ int read_pot(void){
 int main() {
 
     init_all();
-    while(1){printf("%d\n",read_pot()); sleep_ms(1000);}
+    while(0){printf("%d\n",read_pot()); sleep_ms(1000);}
     while (true) {
         switch (mode)
         {

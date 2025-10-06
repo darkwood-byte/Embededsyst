@@ -29,11 +29,11 @@
 
 #define LED_PIN 16
 
-#define PIN_CS_PMOD 21
+#define PIN_CS_PMOD 17
 #define PIN_SCK_PMOD 18
 #define PIN_MOSI_PMOD 19
 #define PIN_RESET_PMOD 20
-#define PIN_DC_PMOD 17
+#define PIN_DC_PMOD 21
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 32

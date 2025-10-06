@@ -1,6 +1,8 @@
 #include <stdio.h>//debuging
 #include <math.h>//pot meter
 #include <string.h>//voor display logica
+#include "hardware/dma.h"//pot meter dma
+#include "hardware/irq.h"//pot meter fifo vlgm
 
 #include "pico/stdlib.h"
 
@@ -29,11 +31,11 @@
 
 #define LED_PIN 16
 
-#define PIN_CS_PMOD 21
+#define PIN_CS_PMOD 17
 #define PIN_SCK_PMOD 18
 #define PIN_MOSI_PMOD 19
 #define PIN_RESET_PMOD 20
-#define PIN_DC_PMOD 17
+#define PIN_DC_PMOD 21
 
 #define OLED_WIDTH 128
 #define OLED_HEIGHT 32
@@ -45,6 +47,14 @@
 #define ANI_SPEED 15
 
 #define MAX_MODES 9
+#define POT_BUFFER_SIZE 160
+
+#define SOUND_MS 1000
+
+volatile int pot_val = 0;
+
+uint16_t pot_buffer[POT_BUFFER_SIZE];//FIFO: first in first out
+int pot_dma_chan;
 
 volatile bool status = 0;
 volatile int delta = 0;
@@ -67,7 +77,12 @@ static spi_inst_t *oled_spi;
 static uint cs_pin, dc_pin;
 static uint8_t buffer[OLED_WIDTH * OLED_PAGES];
 
-static const uint8_t loadingwheel8x8_font[8][8] = {
+int operating = 0;
+
+uint64_t last_sound_bar_triger = 0;
+int last_last_sound_val = 0;
+
+static const uint8_t loadingwheel8x8_font[8][8] = {//voor mn favoriete wieltje hehehehe
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff},
     {0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x0f, 0x0f},
     {0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03},
@@ -241,6 +256,17 @@ static void draw_wheel(uint8_t x, uint8_t page, int fase) {
     }
 }
 
+static void draw_bar(uint8_t x, uint8_t page, int l){
+    const uint8_t *glyph = loadingwheel8x8_font[4];
+    for (int i = 0; i < l; i++){
+        for (uint8_t i = 0; i < 8; i++) {
+            if (x + i < OLED_WIDTH)
+                buffer[page * OLED_WIDTH + x + i] = glyph[i];
+        }
+        x += 2;
+    }
+}
+
 static void draw_string(uint8_t x, uint8_t page, const char *s) {
     while (*s) {
         draw_char(x, page, *s++);
@@ -305,7 +331,7 @@ void start_animation(void){
 }
 
 void put_pixel(uint32_t pixel_grb) {
-    // Zet data in de FIFO van de state machine <--- i luv you deepseek =]
+    // Zet data in de FIFO van de state machine <--- i luv you deepseek =] want ik weet nu pas op 6 oct wat een fifo is 
     pio_sm_put_blocking(pio, sm, pixel_grb << 8u);
 }
 
@@ -324,17 +350,47 @@ void soft_sleep_ms(int ms){
 bool secure_gpio(int pin){
     bool pin_bool = gpio_get(pin);
     soft_sleep_ms(SECURE_MS);
-    if (pin_bool != gpio_get(pin)){return secure_gpio(pin);}//can i fix  it? . . . WE CAN!!
+    if (pin_bool != gpio_get(pin)){return secure_gpio(pin);}//"can i fix  it? . . . WE CAN "-threads 1 to 467!!
     return pin_bool;
 }
 
+void update_SOUND_data(void){
+    draw_bar(8, 1, (int)(pot_val / 2));
+}
 void update_PMOD_data(void){
-    clear_display();  
-    ssd1306_printf(0, 0, "Volume: %d", 69);
-    ssd1306_printf(0, 1, "Mode: %d", mode);
-    ssd1306_printf(0, 2, "Delta: %d", delta);
-    ssd1306_printf(0, 3, "WIFI status: %d", 1);
-    ssd1306_update(); 
+    //clear_display();  
+    if(time_us_64() - last_sound_bar_triger > SOUND_MS *1000){
+        ssd1306_printf(0, 0, "Volume: %d  ", pot_val);
+        ssd1306_printf(0, 1, "Mode: %d        ", mode);//spaces to remove the soundbar
+        ssd1306_printf(0, 2, "Delta: %d  ", delta);
+        ssd1306_printf(0, 3, "WIFI status: %d  ", 1);//because there never was any wifi to begin with
+        ssd1306_update(); 
+    }
+    
+}
+
+void dma_handler() {
+    dma_hw->ints0 = 1u << pot_dma_chan;
+
+    uint32_t sum = 0;
+    for (int i = 0; i < POT_BUFFER_SIZE; i++) sum += pot_buffer[i];
+    float avg = (float)sum / POT_BUFFER_SIZE;
+    int old = pot_val;
+    pot_val = (int)(avg / 4096 * 100);
+    if (pot_val == 99)pot_val = 100;
+    if (old != pot_val && operating){
+        last_sound_bar_triger = time_us_64();
+        clear_display();
+        ssd1306_printf(0, 0, "Volume: %d  ", pot_val);
+        draw_bar(8,1, (int)(pot_val / 2));
+        draw_char(0, 1, '+');
+        ssd1306_update(); 
+    }
+
+    // Herstart DMA want dat waren we eerst vergeten, he le chat?
+    dma_channel_set_read_addr(pot_dma_chan, &adc_hw->fifo, false);
+    dma_channel_set_write_addr(pot_dma_chan, pot_buffer, false);
+    dma_channel_set_trans_count(pot_dma_chan, POT_BUFFER_SIZE, true);
 }
 
 void rotary_encoder_callback(uint gpio, uint32_t events) {
@@ -385,12 +441,34 @@ void init_all(void){
 
     ssd1306_init();
 
-    adc_init();
-    adc_gpio_init(POT_PIN);        // GPIO26 = pin 31 = ADC0
-    adc_select_input(POT_CHANEL);  
+    adc_init();//adc hekserij
+    adc_fifo_setup(true, true, 1, false, false);
+    adc_set_clkdiv(48000.0f); // ~1kHz sample rate ongeveer
+    adc_run(true);
+
+    pot_dma_chan = dma_claim_unused_channel(true);
+    dma_channel_config c = dma_channel_get_default_config(pot_dma_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, true);
+    channel_config_set_dreq(&c, DREQ_ADC);
+
+    dma_channel_configure(
+        pot_dma_chan, &c,
+        pot_buffer,
+        &adc_hw->fifo,
+        POT_BUFFER_SIZE,
+        true
+    );
+
+    dma_channel_set_irq0_enabled(pot_dma_chan, true);
+
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_handler);
+    irq_set_enabled(DMA_IRQ_0, true);
 
     last_rotary_triger = time_us_64();//delay voor de rotary encoder interupts
     last_button_triger = time_us_64();//delay voor de button interupts
+    last_sound_bar_triger = time_us_64();//delay voor de sound bar
 
     uint offset = pio_add_program(pio, &ws2812_program);//pio maddnes, do not touch or i will kill u and marry your daugters son. . .
     ws2812_program_init(pio, sm, offset, LED_PIN, 800000, false);
@@ -566,9 +644,12 @@ int main() {
     
     start_animation();
 
+    operating = 1;
+
     update_PMOD_data();
 
     while (true) {
+        printf("%d\n", pot_val);
         switch (mode)
         {
         case 0:
@@ -611,6 +692,6 @@ int main() {
         default:
             break;
         }
-         
+        update_PMOD_data();
     }
 }

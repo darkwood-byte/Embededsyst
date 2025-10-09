@@ -370,6 +370,7 @@ void update_PMOD_data(void){
 }
 
 void dma_handler() {
+    if (!operating)return;
     printf("(%d)\n", operating);
     dma_hw->ints0 = 1u << pot_dma_chan;
 
@@ -668,7 +669,7 @@ int main() {
 
     init_all();
     
-    start_animation();
+    //start_animation();
 
     operating = 1;
 
